@@ -1,0 +1,205 @@
+---
+title: "Filtering post DADA2"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+library(tidyverse)
+library("ggplot2")
+library("phyloseq")
+library(dplyr)
+```
+
+
+```{r}
+setwd("PATH")
+ASV_counts <- read.csv("PATH/ASVs_counts.tsv", header = TRUE, sep='\t')
+colnames(ASV_counts)[1] <- "ASVs"
+rownames(ASV_counts) <- ASV_counts[,1]
+
+
+
+#Remove TEST39 sample to get accurate number of reads that made it out of the dada2 pipeline and make sure those ASVs are also removed if they are only present in sample TEST39
+ASV_counts=subset(ASV_counts, select=-c(50))
+
+#Remove the list of ASVs identified in sample TEST39 but not found in other samples (others samples have these ASVS as 0 so should not make a difference to the output of the graphs but removing here to get accurate number of ASVs for the table)
+to_remove_ASVs=c("ASV_409","ASV_709","ASV_831","ASV_1049","ASV_1125","ASV_1151","ASV_1192","ASV_1193","ASV_1375","ASV_1376",
+"ASV_1453","ASV_1454","ASV_1455","ASV_1493","ASV_1494","ASV_1495","ASV_1496","ASV_1534","ASV_1535","ASV_1536",
+"ASV_1592","ASV_1593","ASV_1632","ASV_1633","ASV_1635","ASV_1636","ASV_1637","ASV_1689","ASV_1690","ASV_1692",
+"ASV_1748","ASV_1749","ASV_1751","ASV_1752","ASV_1753","ASV_1754","ASV_1755","ASV_1756","ASV_1758","ASV_1759",
+"ASV_1802","ASV_1848","ASV_1849","ASV_1850","ASV_1851","ASV_1852","ASV_1853","ASV_1915","ASV_1916","ASV_1917",
+"ASV_1918","ASV_1920","ASV_1921","ASV_1979","ASV_1980","ASV_1981","ASV_1982","ASV_1983","ASV_2039","ASV_2040",
+"ASV_2041","ASV_2042","ASV_2043","ASV_2044","ASV_2093","ASV_2095","ASV_2097","ASV_2098","ASV_2159","ASV_2160",
+"ASV_2161","ASV_2226","ASV_2227","ASV_2301","ASV_2302","ASV_2304","ASV_1919","ASV_1757")
+
+
+ASV_counts_rem= ASV_counts %>%
+  filter(!ASVs %in% to_remove_ASVs)
+
+
+
+#ASV_counts$total <- rowSums(ASV_counts[,-1])
+#ASV_counts <-subset(ASV_counts, ASV_counts$total > 0)
+#ASV_counts <- subset(ASV_counts, select = -total)
+
+#Remove the list of ASVs identified in sample test39 but not found in other samples (others are 0 should not make a difference to the output of the graphs but remove them anyway before downstream analysis to get accurate number of ASVs)
+
+taxa <- read.csv("PATH/ASVs_taxonomy.tsv", header = TRUE, sep='\t')
+colnames(taxa)[1] <- "ASVs"
+rownames(taxa) <- ASV_counts[,1]
+
+
+
+
+taxa_rem= taxa %>%
+  filter(!ASVs %in% to_remove_ASVs) #There are 2298 ASVs after we remove the ones from sample test39
+
+
+sum(ASV_counts_rem[,-1])#7690837
+```
+
+
+
+
+
+
+
+
+###Calculate percentage of chloroplast
+```{r}
+Chloroplast_ASVs <- taxa_rem %>% subset(Phylum == "Cyanobacteria/Chloroplast") %>% row.names()
+
+Chloroplast <- subset.data.frame(ASV_counts_rem, ASV_counts_rem$ASVs %in% Chloroplast_ASVs) #1065 ASV
+write.csv(Chloroplast,file="PATH/Chloroplast.csv")
+
+```
+
+```{r}
+sum(Chloroplast[,-1]) #7426880
+sum(ASV_counts_rem[,-1]) #7690837
+sum(Chloroplast[,-1])/sum(ASV_counts_rem[,-1])*100 #96.5679
+```
+
+
+### Keep all except chloroplast
+```{r}
+Chl_ASVs <-taxa_rem %>% subset(Phylum != "Cyanobacteria/Chloroplast") %>% row.names()
+Chloroplast_removed <- subset.data.frame(ASV_counts_rem, ASV_counts_rem$ASVs %in% Chl_ASVs)
+```
+
+
+### remove other taxa
+```{r}
+Bad_ASVs <- taxa_rem %>% subset(Kingdom != "Bacteria" & Kingdom != "Archaea") %>% row.names()
+bad.df <- subset.data.frame(ASV_counts_rem, ASV_counts_rem$ASVs %in% Bad_ASVs)
+#Bad_removed <- subset.data.frame(ASV_counts, ASV_counts$ASVs %in% Bad_ASVs)
+Chloroplast_removed <- subset.data.frame(Chloroplast_removed, !Chloroplast_removed$ASVs %in% Bad_ASVs)
+
+### Calculating percentage of bad ASVs
+sum(bad.df[,-1]) #69538
+
+sum(bad.df[,-1])/sum(ASV_counts_rem[,-1])*100 # 0.9041669
+```
+
+
+
+
+
+### Identify unassigned phylum ASVs
+```{r}
+NA_df <-taxa_rem %>%  subset(is.na(taxa$Phylum))  %>% row.names()  
+NA.df <- subset.data.frame(ASV_counts_rem, ASV_counts_rem$ASVs %in% NA_df)
+
+
+#Chloroplast_removed <- subset.data.frame(Chloroplast_removed, !Chloroplast_removed$ASVs %in% Non_NA)
+
+#NAs <-taxa_rem %>% subset(is.na(taxa$Phylum))  %>% row.names() 
+
+```
+
+
+### Accounting for NA's
+```{r}
+sum(ASV_counts_rem[,-1])#7690837
+sum(NA.df[,-1])# 95619 
+
+sum(NA.df[,-1])/sum(ASV_counts_rem[,-1])*100 #1.243285
+
+```
+
+
+
+
+
+###Filter samples with less than 150 reads total
+```{r}
+###note this can be changed based on the dataset
+
+Chloroplast_removed <- Chloroplast_removed %>%  bind_rows(summarise_all(., ~if(is.numeric(.)) sum(.) else "Total"))
+Chloroplast_removed <- Chloroplast_removed[,(Chloroplast_removed[nrow(Chloroplast_removed),]) > 150] 
+Chloroplast_removed <- subset(Chloroplast_removed[-nrow(Chloroplast_removed),]) 
+```
+
+###Remove singletons (single reads) and identify final number of reads, # reads and ASVs
+```{r}
+Chloroplast_removed[Chloroplast_removed == 1] <- 0
+
+
+#Check that there are no ASVs with zero reads after filtering 
+Chloroplast_removed$total <- rowSums(Chloroplast_removed[,-1])
+Chloroplast_removed <-subset(Chloroplast_removed, Chloroplast_removed$total > 0)
+Chloroplast_removed <- subset(Chloroplast_removed, select = -total)
+
+
+
+Taxa_remaining <- Chloroplast_removed %>% row.names()
+Taxa_remaining.df <- subset.data.frame(taxa_rem, taxa_rem$ASVs %in% Taxa_remaining)
+
+
+#Final count
+sum(ASV_counts_rem[,-1])#7690837
+sum(Chloroplast_removed[,-1])# 98097
+
+sum(Chloroplast_removed[,-1])/sum(ASV_counts_rem[,-1])*100 #1.275505
+
+
+
+
+```
+
+
+###Save files
+```{r}
+write.csv(Chloroplast_removed, "PATH/ASV_counts_cleanedv3.csv")
+write.csv(Taxa_remaining.df, "PATH/Taxonomy_cleaned_v3.csv")
+```
+
+
+```{r}
+#Identify the number of unique ASVs per sample for table
+#Reformat data from wide to long
+library(tidyr)
+Final_ASV_counts_long <- Chloroplast_removed %>%
+  #rownames_to_column('ASVs') %>%  # Convert row names (ASVs) to a column
+  pivot_longer(cols = -ASVs,      # All columns except 'ASV'
+               names_to = 'Sample',   # The new column for sample names
+               values_to = 'Count')   # The new column for ASV counts
+
+
+
+
+unique_asvs_count <- Final_ASV_counts_long %>%
+  filter(Count > 0) %>%  # Keep only non-zero counts
+  group_by(Sample) %>%   # Group by sample
+  summarise(Unique_ASVs = n())  # Count unique ASVs per sample
+
+write.csv(unique_asvs_count, file="PATH/Unique_ASV_count_per_sample_16S.csv")
+```
+

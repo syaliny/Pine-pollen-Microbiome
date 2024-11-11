@@ -1,0 +1,145 @@
+---
+title: "Dada2 16S pine pollen"
+author: "Syaliny"
+date: "14/6/2022"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+#!/usr/bin/env Rscript
+
+#Once installed these steps won't need to be done again
+##if (!requireNamespace("BiocManager", quietly = TRUE))
+  ##install.packages("BiocManager")
+##BiocManager::install(version = '3.13', ask= FALSE)
+##BiocManager::install("dada2", version = "3.13")
+```
+
+```{r}
+library(dada2)
+path <- "~/PATH/"
+list.files(path)
+```
+
+
+```{r}
+# Forward and reverse fastq filenames have format: 16S_CPP01_K2PF5_GGCGTAACGGCA_L001_R1.fastq.gz
+fnFs <- sort(list.files(path, pattern="_L001_R1.fastq.gz", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_L001_R2.fastq.gz", full.names = TRUE))
+# Extract sample names
+#fnFs
+sample.names <- sub("(.*?_.*?_.*?_.*?)_.*", "\\1", basename(fnFs))
+sample.names
+```
+
+
+```{r}
+
+#----- check read quality-----
+##pdf("~/PATH/Plot_quality_16S_pollen.pdf", width=12, height=8)
+plotQualityProfile(fnFs[1:4])
+plotQualityProfile(fnRs[1:4])
+##dev.off()
+```
+
+```{r}
+# ------filter and trim------
+newpath<-"~/PATH/"
+filtFs <- file.path(newpath, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(newpath, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+#filtFs
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+
+filtered_out <- filterAndTrim(fnFs, filtFs,
+                fnRs, filtRs, maxEE=c(2,5),
+                truncLen=c(250,230))
+
+head(filtered_out)
+
+#Error rates
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+
+plotErrors(errF, nominalQ=TRUE)
+
+```
+
+```{r}
+# dereplicate reads
+derep_filtFs <- derepFastq(filtFs, verbose=TRUE)
+names(derep_filtFs) <- sample.names # the sample names in these objects are initially the file names of the samples, this sets them to the sample names for the rest of the workflow
+derep_filtRs <- derepFastq(filtRs, verbose=TRUE)
+names(derep_filtRs) <- sample.names
+```
+
+```{r}
+# inferring ASV
+dadaFs <- dada(derep_filtFs, err=errF, multithread=TRUE)
+dadaRs <- dada(derep_filtRs, err=errR, multithread=TRUE)
+```
+
+```{r}
+# merging ASV
+merged_amplicons <- mergePairs(dadaFs, derep_filtFs, dadaRs, derep_filtRs, trimOverhang=TRUE, verbose=TRUE)
+seqtab <- makeSequenceTable(merged_amplicons)
+```
+
+```{r}
+# remove chimeric ASV
+seqtab.nochim <- removeBimeraDenovo(seqtab, multithread=TRUE, verbose=TRUE)
+write.table(seqtab.nochim, "~/PATH/seqtab_nochim.txt")
+
+```
+
+```{r}
+# final summary table
+getN <- function(x) sum(getUniques(x))
+summary_tab <- data.frame(row.names=sample.names, dada2_input=filtered_out[,1],
+                          filtered=filtered_out[,2], dada_f=sapply(dadaFs, getN),
+                          dada_r=sapply(dadaRs, getN), merged=sapply(merged_amplicons, getN),
+                          nonchim=rowSums(seqtab.nochim),
+                          final_perc_reads_retained=round(rowSums(seqtab.nochim)/filtered_out[,1]*100, 1))
+#head(summary_tab)
+write.table(summary_tab, "~/PATH/final_summary.txt")
+
+```
+
+```{r}
+# assign taxonomy
+taxa <- assignTaxonomy(seqtab.nochim, "~/PATH/rdp_train_set_v18.fa", multithread=TRUE)
+
+
+# giving our seq headers more manageable names (ASV_1, ASV_2...)
+asv_seqs <- colnames(seqtab.nochim)
+asv_headers <- vector(dim(seqtab.nochim)[2], mode="character")
+
+for (i in 1:dim(seqtab.nochim)[2]) {
+  asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+
+# writing out a fasta of our final ASV seqs:
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, "~/PATH/ASVs.fa")
+
+# count table:
+asv_tab <- t(seqtab.nochim)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "~/PATH/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
+
+# tax table:
+asv_tax <- taxa
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "~/PATH/ASVs_taxonomy.tsv", sep="\t", quote=F, col.names=NA)
+```
+
