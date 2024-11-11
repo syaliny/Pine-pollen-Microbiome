@@ -1,0 +1,610 @@
+---
+title: "ITS2_phyloseq_v2"
+author: "Syaliny"
+date: "17/06/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo = T, results = 'hide', error=FALSE, warning=FALSE, message=FALSE}
+ if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("microbiome")
+library(microbiome)
+library(microbiome)
+library(phyloseq)
+library(tibble)
+library(microbiomeutilities)
+library(viridis)
+library(RColorBrewer)
+library(ggplot2)
+library(vegan)
+library(dplyr)
+library(grid)
+library(scales)
+```
+
+
+```{r}
+setwd("PATH/")
+```
+
+
+#Load data
+```{r}
+#Take ASV count table produced from filtering step and clean up sample names, before clean up samples are names like this ITS_CPP01_K4FTN_AGTTCTACGTCA. Edit sample names so they are in this format CPP01 and rename to edited. This can be done in excel. Read the table with edited names below
+
+ASV_counts <- read.csv("PATH/ASV_counts_cleaned_edited.csv", header=TRUE)
+ASV_counts <- subset(ASV_counts[,-1]) #remove first col X
+rownames(ASV_counts) <- ASV_counts[,1] # first col as rownames
+ASV_counts <- subset(ASV_counts[,-1]) #delete first col
+
+
+
+taxa <- read.csv("PATH/Taxonomy_cleaned.csv")
+taxa <-subset(taxa[,-1])  #remove X col
+rownames(taxa) <- taxa[,1] # first col as rownames 
+#taxa[11:13] <- NULL #remove empty columns
+taxa <- subset(taxa[,-1])
+
+
+
+
+##Metadata
+metadata <- read.csv("PATH/Metadata_edited.csv")
+metadata = subset(metadata, select = -c(1,3) )
+colnames(metadata)[1] <- "SampleID"
+rownames(metadata) <- metadata[,1]
+#metadata <- subset(metadata[1:16,]) #sel
+```
+
+
+
+
+#Make phyloseq object
+```{r}
+asv_mat <- as.matrix(ASV_counts) ### Transform ASV and taxa tables to matrix
+tax_mat <- as.matrix(taxa)
+
+ASV = otu_table(asv_mat, taxa_are_rows = TRUE)
+  TAX = tax_table(tax_mat)
+  samples = sample_data(metadata)
+  
+  ps <- phyloseq(ASV, TAX, samples)
+  ps
+  
+  #Sanity check
+  get_taxa_unique(ps, "Phylum")
+```
+
+
+
+##Histogram of read counts
+```{r}
+sample_sum_df=data.frame(sum=sample_sums(ps))
+sample_sum_df
+
+write.csv(sample_sum_df,file="PATH/ITS2_Total_reads_per_sample.csv")
+
+# Plot the histogram
+
+Histogram= ggplot(sample_sum_df, aes(x=sum))+geom_histogram(color="black",fill="indianred",binwidth=2000)+ggtitle("Histogram of total reads")+xlab("Read counts")+theme(axis.title.y=element_blank())+scale_x_continuous(breaks=seq(0, 150000, by=15000))+theme_bw()
+
+Histogram
+
+ggsave("PATH/Histogram_total_reads.pdf",width=10,height=4)
+
+
+```
+
+
+
+
+
+### Transpose dataframe
+```{r}
+library(tibble)
+ASV_t <- t(ASV_counts) %>%  as.data.frame() %>% rownames_to_column()
+colnames(ASV_t)[1] <- "SampleID"
+row.names(ASV_t) <- ASV_t$SampleID
+ASV_all <- subset(ASV_t[,-1])
+
+
+```
+
+
+#Fig S1
+####Summary rarefaction curve - all samples
+```{r}
+library(vegan)
+pdf(file = "PATH/Rarecurve_pollen_ITS2.pdf",   # The directory you want to save the file in
+    width = 8, # The width of the plot in inches
+    height = 6) # The height of the plot in inches
+
+
+rarecurve(ASV_all, step = 20,  xlab = "Sequencing depth", ylab = "ASVs", label = TRUE)
+
+
+dev.off()
+```
+
+
+
+
+#Check if there are taxa with no counts if there are remove and replot sequnces per sample or OTU
+```{r}
+#Check if there are any taxa less than zero or equal to zero after pruning
+#This tells you that there are so you also need to prune taxa
+sum(taxa_sums(ps) > 0) # 2633
+any(taxa_sums(ps)== 0) #TRUE
+sum(taxa_sums(ps) == 0) #12
+any(taxa_sums(ps) > 1) #TRUE
+sum(taxa_sums(ps) > 1) #2633
+any(taxa_sums(ps) < 1) #TRUE
+sum(taxa_sums(ps) < 1) #12
+
+
+#Since there are taxa with counts that are less than one pruning is needed
+ps_pp=prune_taxa(taxa_sums(ps) >1,ps)
+
+#Now check again if there are any taxa less than or equal to 0
+#This shows that there are no taxa that are less than or equal to 0
+sum(taxa_sums(ps_pp) > 0) #2633
+any(taxa_sums(ps_pp)== 0) #FALSE
+sum(taxa_sums(ps_pp) == 0) #0
+any(taxa_sums(ps_pp) > 1) #TRUE
+sum(taxa_sums(ps_pp) > 1) #2633
+any(taxa_sums(ps_pp) < 1) #FALSE
+sum(taxa_sums(ps_pp) < 1) #0
+```
+
+#Figure 2
+#Alpha richness
+```{r}
+alpha_summary<- estimate_richness(ps_pp, measures = c("Observed", "Shannon"))
+
+
+#This calculates eveness and adds it to the prior file
+Evenness <- evenness(ps_pp, 'pielou')
+alpha_summary$Pielou <- Evenness$pielou
+summary(alpha_summary)
+
+# Combine results with sample_data. This is useful if we wish to plot later against other variables or information.
+alpha_meta <- data.frame(alpha_summary, sample_data(ps_pp))
+write.csv(alpha_meta,"PATH/alpha_div_ITS2.csv")
+
+
+
+#Change year and direction to a factor
+alpha_meta$Year <- factor(alpha_meta$Year, levels=c("2020","2021")) 
+alpha_meta$Direction <- as.factor(alpha_meta$Direction)
+
+
+
+df2 <- tidyr::gather(alpha_meta, key = "Measure", value = "Value", Observed, Pielou)
+
+df2$Direction=factor(df2$Direction,levels=c("NW","NE","SE","SW"))
+
+##Read df2 data into Graphpad prism to create richness boxplots (Fig 2) and generate stats in prism
+
+```
+
+
+
+#Figure 6
+#NMDS values extracted from primer and plot in R -combined figure 16S and ITS
+```{r}
+
+#plot with lines connecting the locations (Mcleans 2020 connected to Mcleans 2021)/Combine fungi and bacteria on one plot 
+
+##Read file with NMDS scores from primer for 16S and ITS2/ same values for year and direction
+NMDS_score_primer_yr_dir_ITS2=read.csv("PATH/ITS2_pine_pollen_NMDS_scores_from_primer_yr_dir.csv")
+
+
+NMDS_score_primer_yr_dir_16S=read.csv("PATH/16S_pine_pollen_NMDS_scores_from_primer_yr_dir.csv")
+
+
+###Change to factor
+NMDS_score_primer_yr_dir_ITS2$Year=as.factor(NMDS_score_primer_yr_dir_ITS2$Year)
+NMDS_score_primer_yr_dir_ITS2$Direction=as.factor(NMDS_score_primer_yr_dir_ITS2$Direction)
+
+
+NMDS_score_primer_yr_dir_16S$Year=as.factor(NMDS_score_primer_yr_dir_16S$Year)
+NMDS_score_primer_yr_dir_16S$Direction=as.factor(NMDS_score_primer_yr_dir_16S$Direction)
+
+
+#Direction ITS2
+
+NMDS_dir_primer_ITS2 = ggplot(NMDS_score_primer_yr_dir_ITS2, aes(x = NMDS1, y = NMDS2)) +  geom_line(aes(group=Location))+
+    geom_point(size=2, aes(colour=Direction))+
+    theme(axis.text.y = element_text(colour = "black", size = 10), 
+    axis.text.x = element_text(colour = "black", size = 10), 
+    legend.text = element_text(size = 10, colour ="black"), 
+    legend.position = "right", axis.title.y = element_text(face = "bold", size = 12), 
+    axis.title.x = element_text(face = "bold", size = 12, colour = "black"), 
+    legend.title = element_text(size = 12, colour = "black", face = "bold"), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+    legend.key=element_blank()) + 
+    labs(x = "NMDS1", y = "NMDS2",colour="Direction")  + 
+  annotate("text",
+           x = 1,
+           y = 2.0,
+           label ='atop(bold("Stress =")~0.16)',size=3,parse = TRUE)+ggtitle("Fungal community simmilarity")+theme(aspect.ratio =1)
+    #scale_colour_manual(values = c("#009E73", "#E69F00")) 
+ 
+NMDS_dir_primer_ITS2
+
+
+
+#Direction for 16S
+
+NMDS_dir_primer_16S = ggplot(NMDS_score_primer_yr_dir_16S, aes(x = NMDS1, y = NMDS2)) + geom_line(aes(group=Location))+
+    geom_point(size=2, aes(colour=Direction))+
+    theme(axis.text.y = element_text(colour = "black", size = 10), 
+    axis.text.x = element_text(colour = "black", size = 10), 
+    legend.text = element_text(size = 10, colour ="black"), 
+    legend.position = "none", axis.title.y = element_text(face = "bold", size = 12), 
+    axis.title.x = element_text(face = "bold", size = 12, colour = "black"), 
+    legend.title = element_text(size = 12, colour = "black", face = "bold"), 
+    panel.background = element_blank(), panel.border = element_rect(colour = "black", fill = NA, size = 1.2),
+    legend.key=element_blank()) + 
+    labs(x = "NMDS1", y = "NMDS2",colour="Direction")  + 
+  annotate("text",
+           x = -0.6,
+           y = 2,
+           label ='atop(bold("Stress =")~0.13)',size=3,parse = TRUE)+ggtitle("Bacterial community simmilarity")+theme(aspect.ratio =1)
+    #scale_colour_manual(values = c("#009E73", "#E69F00")) 
+ 
+NMDS_dir_primer_16S
+
+
+
+
+
+#Combine plots 
+library(ggpubr)
+
+ggarrange(NMDS_dir_primer_16S, NMDS_dir_primer_ITS2, widths =c(0.70,0.85),
+          labels = c("(A) ", "(B)"),
+          ncol = 2, nrow = 2)
+
+
+ggsave("PATH/ITS2_16S_comb_NMDS_dir_primer_wt_lines_newv3.pdf", width=10, height=10)
+
+```
+
+
+
+
+
+
+
+
+#Figure 4
+#Using Heatmap to identify taxa that vary across samples and within year
+```{r}
+library(dplyr)
+library(phyloseq)
+#pheatmap
+library(pheatmap)
+ps_df_class_pheatmap<- ps_pp %>% tax_glom(taxrank="Class") %>%
+  transform_sample_counts(function(x) {x/sum(x)}*100 ) #%>% psmelt()
+
+write.csv(ps_df_class_pheatmap,"PATH/ps_df_class_pheatmap_ITS2.csv")
+
+
+#This step deletes extra characters that indicate the taxonomic level. If you wish to plot class, family, genus, etc, you will need to repeat this step replacing replacing the number with the level you wish to remove. 
+tax_table(ps_df_class_pheatmap) =gsub("k__", "", tax_table(ps_df_class_pheatmap))
+tax_table(ps_df_class_pheatmap) =gsub("p__", "", tax_table(ps_df_class_pheatmap))
+tax_table(ps_df_class_pheatmap) =gsub("c__", "", tax_table(ps_df_class_pheatmap))
+tax_table(ps_df_class_pheatmap) =gsub("o__", "", tax_table(ps_df_class_pheatmap))
+
+
+
+matrix <- as.matrix(data.frame(otu_table(ps_df_class_pheatmap)))
+rownames(matrix) <- as.character(tax_table(ps_df_class_pheatmap)[, "Class"])
+metadata_sub <- data.frame(sample_data(ps_df_class_pheatmap))
+# Define the annotation color for columns and rows
+annotation_col = data.frame(
+    Year = as.factor(metadata_sub$Year), 
+   # `Body site` = as.factor(metadata_sub$body.site), 
+    check.names = FALSE
+)
+rownames(annotation_col) = rownames(metadata_sub)
+
+annotation_row = data.frame(
+    Phylum = as.factor(tax_table(ps_df_class_pheatmap)[, "Phylum"])
+)
+rownames(annotation_row) = rownames(matrix)
+
+# ann_color should be named vectors
+#phylum_col = RColorBrewer::brewer.pal(length(levels(annotation_row$Phylum)), "Paired")
+##phylum_col=colorRampPalette(rev(brewer.pal(n = 14, name = "Paired")))(14)
+phylum_col=colorRampPalette(rev(brewer.pal(n = 14, name = "Paired")))(14)#same like 16S
+names(phylum_col) = levels(annotation_row$Phylum)
+ann_colors = list(
+    Year = c(`2020` = "red", `2021` = "blue"),
+   # `Body site` = c(gut = "purple", tongue = "yellow"),
+    Phylum = phylum_col
+)
+
+a=pheatmap(matrix, scale= "none", 
+                         annotation_col = annotation_col, 
+                         annotation_row = annotation_row, 
+                         annotation_colors = ann_colors)
+
+
+a
+
+#ggsave("PATH/Heatmap_class_lvl2.pdf", width=24, height=14, units="in")
+
+#Cant save using ggsave, export manually as A4 Heatmap_class_lvl2.pdf
+
+
+```
+
+
+
+
+
+
+
+
+
+#Fig S3
+#use this for populating table 
+#core mbiome v2
+```{r}
+table(meta(ps_pp)$Year, useNA = "always")
+
+library(dplyr)
+library(phyloseq)
+library(microbiome)
+library(microbiomeutilities)
+psdata.rel <- microbiome::transform(ps_pp, "compositional") 
+psdata.rel.gen <- tax_glom(psdata.rel, "Genus") 
+
+psdata.rel.gen.df2=psdata.rel.gen %>%
+   psmelt() %>% filter(Abundance>0)
+
+write.csv(psdata.rel.gen.df2,"PATH/ITS2_RelAbd_for_core_mbiome_table.csv")
+
+
+
+
+
+
+
+Yr_unique<-unique(as.character(meta(psdata.rel.gen)$Year))
+print(Yr_unique)
+
+
+#For Genus level Venn digaram
+list_core2 <- c() # an empty object to store information
+
+for (n in Yr_unique){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    
+    ps.sub2 <- subset_samples(psdata.rel.gen, Year == n) # Choose sample from Year by n
+    
+    core_m2 <- core_members(ps.sub2, # ps.sub is phyloseq selected with only samples from g 
+                           detection=0.01,# detected in atleast 90% samples
+                           prevalence = 0.50) 
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m2))) # print core taxa identified .
+    list_core2[[n]] <- core_m2 # add to a list core taxa for each group.
+    #print(list_core)
+}
+
+
+print(list_core2)
+
+
+# format names
+psdata.rel.f2 <- format_to_besthit(psdata.rel.gen)
+# check names
+taxa_names(psdata.rel.f2)[1:10]
+
+#Loop  tp combine names with our ASV's
+list_core2 <- c() # an empty object to store information
+
+for (n in Yr_unique){ # for each variable n in DiseaseState
+    #print(paste0("Identifying Core Taxa for ", n))
+    
+    ps.sub2 <- subset_samples(psdata.rel.f2, Year == n) # Choose sample from DiseaseState by n
+    
+    core_m2 <- core_members(ps.sub2, # ps.sub is phyloseq selected with only samples from g 
+                           detection = 0.01, # 0.001 in atleast 90% samples 
+                           prevalence = 0.50)
+    print(paste0("No. of core taxa in ", n, " : ", length(core_m2))) # print core taxa identified in each DiseaseState.
+    list_core2[[n]] <- core_m2 # add to a list core taxa for each group.
+    #print(list_core)
+}
+
+print(list_core2)
+
+#Use the core list from the Venn diagram created above to make an upset plot of the glommed Genus
+library(UpSetR)
+library(devtools)
+install_github("jokergoo/ComplexHeatmap")
+library(ComplexHeatmap)
+
+comb_mat_genus2=make_comb_mat(list_core2)  #says could not find function make_comb_mat so i had to install_github
+comb_mat_genus2
+
+Upset_plot_genus_by_yr2=UpSet(comb_mat_genus2,set_order = c("2020", "2021"),comb_order = order(comb_size(comb_mat_genus2)),top_annotation = upset_top_annotation(comb_mat_genus2, add_numbers = TRUE), right_annotation = upset_right_annotation(comb_mat_genus2, add_numbers = TRUE))
+
+Upset_plot_genus_by_yr2
+#Save figure manually
+```
+
+
+
+# For Full Figure 3 code refer to 16S_pine_pollen_unrarefied has combined metaocder for bacteria and fungi
+#Metacoder
+```{r}
+library(vegan)
+library(metacoder)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(stringr)
+library(phyloseq)
+library(agricolae)
+library(ape)
+library(metacoder)
+
+x = parse_tax_data(hmp_otus, class_cols = "lineage", class_sep = ";",
+                   class_key = c(tax_rank = "info", tax_name = "taxon_name"),
+                   class_regex = "^(.+)__(.+)$")
+heat_tree(x, node_label = taxon_names, node_size = n_obs, node_color = n_obs)
+
+
+
+
+
+otu_data <- read.csv("PATH/ASV_counts_cleaned_edited.csv") # You might need to change the path to the file
+print(otu_data) # You can also enter just `otu_data` to print it
+otu_data = select(otu_data, 2:50)
+
+
+#Had to format taxonomy table, each taxonomic level has to have the letter of the level in front of it, for example Kingdom column should have k__ at the front : k__fungi. For ITS data, the data is already in this format so all good. Also need to add a column named Taxonomy with collated into from kingdom to genus separated by ;
+
+tax_data <- read.csv("PATH/Taxonomy_for_metacoder.csv")
+print(tax_data) # You can also enter `tax_data` to print it
+tax_data = select(tax_data, 2:10)
+
+##tax_data$`ASVs` <- sub(tax_data$`ASVs`, # ` are needed because of the space
+                       ##  pattern = "ASV_", replacement = "")
+##print(tax_data) 
+
+
+tax_data$`ASVs` <- as.character(tax_data$`ASVs`) # Must be same type for join to work
+otu_data$ASVs <- as.character(otu_data$ASVs) # Must be same type for join to work
+otu_data <- left_join(otu_data, tax_data,
+                      by = c("ASVs")) # identifies cols with shared IDs
+print(otu_data)
+
+tail(colnames(otu_data), n = 10)
+
+
+library(readr)
+library(metacoder)
+sample_data <- read_csv("PATH/Metadata_edited.csv",
+                        col_types = "cccccccc") # each "c" means a column of "character"
+print(sample_data) # You can also enter `sample_data` to print it
+
+
+head(otu_data$Taxonomy, 10)
+
+obj <- parse_tax_data(otu_data,
+                      class_cols = "Taxonomy", # The column in the input table
+                      class_sep = ";") # What each taxon is seperated by
+print(obj)
+
+print(obj$data$tax_data)
+
+
+
+obj <- parse_tax_data(otu_data,
+                      class_cols = "Taxonomy",
+                      class_sep = ";",
+                      class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
+                      class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name"))
+print(obj)
+
+head(taxon_names(obj))
+
+obj$data$class_data
+
+head(taxon_ranks(obj))
+
+obj$data$class_data <- NULL
+
+names(obj$data) <- "otu_counts"
+print(obj)
+
+
+
+###sample_data <- sample_data[sample_data$Experiment == "ecotypes", ]
+###sample_data <- filter(sample_data,
+           ##           Site %in% c("Mah", "Jam", "Sil"),
+                    ##  Age == 3)
+
+
+
+##sample_data <- sample_data %>%
+  ##group_by(Plant_ID) %>%
+ ## filter(n() == 2)
+
+
+###print(obj)
+
+obj <- filter_taxa(obj, taxon_names != "NA")
+print(obj)
+
+head(taxon_names(obj))
+head(all_names(obj), 20)
+length(all_names(obj))
+
+
+obj <- filter_taxa(obj, taxon_names == "Fungi", subtaxa = TRUE)
+print(obj)
+
+##filter_taxa(obj, taxon_names == "Bacteria")
+
+obj$data$otu_counts <- obj$data$otu_counts[c("taxon_id", "ASVs", sample_data$Actually_usable_sample_name)]
+print(obj)
+
+has_no_reads <- rowSums(obj$data$otu_counts[, sample_data$Actually_usable_sample_name]) == 0
+
+sum(has_no_reads)
+
+
+filter_obs(obj, "otu_counts", !has_no_reads) # note the ! negation operator
+
+obj <- filter_obs(obj, "otu_counts", !has_no_reads, drop_taxa = TRUE)
+print(obj)
+
+set.seed(1)
+
+obj %>% 
+  filter_taxa(grepl(pattern = "^[a-zA-Z]+$", taxon_names)) %>% # remove "odd" taxa
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>% # subset to the order rank
+  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = n_obs,
+            node_color = n_obs,
+            node_color_axis_label = "ASV counts",
+            layout = "davidson-harel", initial_layout = "reingold-tilford",
+            output_file="Metacoder_v1.pdf")
+#obj2
+
+
+set.seed(1)
+
+obj %>%
+  filter_taxa(grepl(pattern = "^[a-zA-Z]+$", taxon_names)) %>% # remove "odd" taxa
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>% # subset to the class rank
+  heat_tree(node_label = taxon_names,
+            node_size = n_obs,
+            node_color = n_obs,
+            node_color_axis_label = "ASV counts",
+           # node_size_range = c(0.01, 0.05),
+           # edge_size_range = c(0.007, 0.01),
+            initial_layout = "re", layout = "da",
+            output_file = "Metacoder_v2.pdf")
+
+```
+
+
+
+
+
+
+

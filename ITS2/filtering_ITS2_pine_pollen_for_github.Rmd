@@ -1,0 +1,140 @@
+---
+title: "Filtering post DADA2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r cars}
+library("tidyverse")
+library("ggplot2")
+library("phyloseq")
+library(dplyr)
+```
+
+
+```{r pressure, echo=FALSE}
+setwd("PATH/")
+ASV_counts <- read.csv("PATH/ASVs_counts.tsv", header = TRUE, sep='\t')
+colnames(ASV_counts)[1] <- "ASVs"
+rownames(ASV_counts) <- ASV_counts[,1]
+#bark <- subset(bark[-1,])
+
+#Remove TEST39 sample to get accurate number of reads that made it out of the dada2 pipeline and make sure those ASVs are also removed if they are only present in sample TEST39
+ASV_counts=subset(ASV_counts, select=-c(50))
+
+
+#Remove the list of ASVs identified in sample TEST39 but not found in other samples (others samples have these ASVS as 0 so should not make a difference to the output of the graphs but removing here to get accurate number of ASVs for the table)
+to_remove_ASVs=c("ASV_435","ASV_771","ASV_779","ASV_794","ASV_877","ASV_956","ASV_995","ASV_1080","ASV_1288","ASV_1537",
+"ASV_2074","ASV_2119")
+
+
+ASV_counts_rem= ASV_counts %>%
+  filter(!ASVs %in% to_remove_ASVs)
+
+
+
+
+#Remove the list of ASVs identified in sample test39 but not found in other samples (others are 0 should not make a difference to the output of the graphs but remove them anyway before downstream analysis to get accurate number of ASVs)
+
+taxa <- read.csv("PATH/ASVs_taxonomy.tsv", header = TRUE, sep='\t')
+colnames(taxa)[1] <- "ASVs"
+rownames(taxa) <- ASV_counts[,1]
+
+
+
+taxa_rem= taxa %>%
+  filter(!ASVs %in% to_remove_ASVs) #There are 2298 ASVs after we remove the ones from sample test39
+
+
+sum(ASV_counts_rem[,-1])#4551793
+
+```
+
+### remove unassigned phylum ASVs
+```{r}
+remove_ASVs <-taxa_rem %>% subset(is.na(taxa$Phylum)) %>% row.names()  #298 ASVs
+NA_removed <- subset.data.frame(ASV_counts_rem, ASV_counts_rem$ASVs %in% remove_ASVs) #2634 ASVs that have rank info at phylum level
+```
+
+
+
+### Accounting for NA's,and how many sequences remain
+```{r}
+sum(ASV_counts_rem[,-1])#4551793
+sum(NA_removed[,-1])#4269246  #Total reads with rank info at phyla instead of NA, NA reads ; 4551793-4269246=282547
+
+sum(NA_removed[,-1])/sum(ASV_counts_rem[,-1])*100 #93.79  #From this identify % of NA sequences 100-93.79=6.21%
+
+```
+
+###Filter samples with less than 150 reads total
+```{r}
+###note this can be changed based on the dataset
+
+NA_removed <- NA_removed %>%  bind_rows(summarise_all(., ~if(is.numeric(.)) sum(.) else "Total"))
+NA_removed <- NA_removed[,(NA_removed[nrow(NA_removed),]) > 150] 
+NA_removed <- subset(NA_removed[-nrow(NA_removed),]) 
+```
+
+###Remove singletons (single reads)
+```{r}
+NA_removed[NA_removed == 1] <- 0
+
+```
+
+#identify final number of reads, # reads and ASVs
+```{r}
+
+####Check there are no ASVs with zero reads after filtering
+NA_removed$total <- rowSums(NA_removed[,-1])
+NA_removed <-subset(NA_removed, NA_removed$total > 0)
+NA_removed <- subset(NA_removed, select = -total)
+
+
+
+
+
+Taxa_remaining <- NA_removed %>% row.names()
+Taxa_remaining.df <- subset.data.frame(taxa_rem, taxa_rem$ASVs %in% Taxa_remaining)
+
+#Final count of remaining sequences
+sum(ASV_counts_rem[,-1])#45517973
+sum(NA_removed[,-1])#  4269246
+
+sum(NA_removed[,-1])/sum(ASV_counts_rem[,-1])*100 #93.79262
+```
+
+
+
+###Save files
+```{r}
+write.csv(NA_removed, "PATH/ASV_counts_cleaned_v2.csv")
+write.csv(Taxa_remaining.df, "PATH/Taxonomy_cleaned_v2.csv")
+```
+
+
+```{r}
+#Identify the number of unique ASVs per sample for table
+#Reformat data from wide to long
+library(tidyr)
+Final_ASV_counts_long <- NA_removed %>%
+  #rownames_to_column('ASVs') %>%  # Convert row names (ASVs) to a column
+  pivot_longer(cols = -ASVs,      # All columns except 'ASV'
+               names_to = 'Sample',   # The new column for sample names
+               values_to = 'Count')   # The new column for ASV counts
+
+
+
+
+unique_asvs_count <- Final_ASV_counts_long %>%
+  filter(Count > 0) %>%  # Keep only non-zero counts
+  group_by(Sample) %>%   # Group by sample
+  summarise(Unique_ASVs = n())  # Count unique ASVs per sample
+
+write.csv(unique_asvs_count, file="PATH/Unique_ASV_count_per_sample_ITS2.csv")
+```
+
